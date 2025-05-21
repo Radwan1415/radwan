@@ -1,0 +1,445 @@
+// @version=6
+// @description=استراتيجية تداول متقدمة تعتمد على Volume Profile وBook Map والذكاء الاصطناعي
+indicator("استراتيجية التداول المتكاملة", overlay=true)
+
+// ===== وحدة التكوين =====
+// معلمات Volume Profile
+vpNumOfBars = input.int(90, "عدد الشرائط لتحليل Volume Profile", minval=14, maxval=365, group="Volume Profile")
+vpNumOfHistograms = input.int(50, "عدد الهيستوجرامات", minval=10, maxval=200, group="Volume Profile")
+vpWidth = input.int(50, "عرض نقطة التحكم", minval=20, maxval=100, group="Volume Profile")
+showVolumeProfile = input.bool(true, "إظهار Volume Profile", group="Volume Profile")
+
+// معلمات المتوسطات المتحركة
+maFast = input.int(20, "المتوسط المتحرك السريع", minval=1, group="المتوسطات المتحركة")
+maMedium = input.int(50, "المتوسط المتحرك المتوسط", minval=1, group="المتوسطات المتحركة")
+maSlow = input.int(200, "المتوسط المتحرك البطيء", minval=1, group="المتوسطات المتحركة")
+showMA = input.bool(true, "إظهار المتوسطات المتحركة", group="المتوسطات المتحركة")
+
+// معلمات الإشارات
+signalSize = input.int(5, "حجم إشارات الدخول والخروج", minval=1, maxval=10, group="الإشارات") // Note: signalSize input is not directly used for plotshape size due to Pine Script limitations. Modify plotshape size constants directly if needed.
+showSignals = input.bool(true, "إظهار إشارات الدخول والخروج", group="الإشارات")
+showStopLoss = input.bool(true, "إظهار مستويات وقف الخسارة", group="الإشارات")
+
+// معلمات الذكاء الاصطناعي
+trendWeight = input.float(0.35, "وزن تحليل الاتجاه", minval=0.0, maxval=1.0, step=0.05, group="الذكاء الاصطناعي")
+momentumWeight = input.float(0.25, "وزن تحليل الزخم", minval=0.0, maxval=1.0, step=0.05, group="الذكاء الاصطناعي")
+patternWeight = input.float(0.20, "وزن تحليل الأنماط", minval=0.0, maxval=1.0, step=0.05, group="الذكاء الاصطناعي")
+vpWeight = input.float(0.20, "وزن تحليل Volume Profile", minval=0.0, maxval=1.0, step=0.05, group="الذكاء الاصطناعي")
+entryThreshold = input.float(60.0, "عتبة إشارة الدخول", minval=0.0, maxval=100.0, step=5.0, group="الذكاء الاصطناعي")
+exitThreshold = input.float(60.0, "عتبة إشارة الخروج", minval=0.0, maxval=100.0, step=5.0, group="الذكاء الاصطناعي")
+
+// ===== وحدة جمع البيانات =====
+// بيانات السعر والحجم
+price = close
+volume = volume
+highPrice = high
+lowPrice = low
+
+// ===== وحدة تحليل Volume Profile =====
+// حساب نطاق التحليل
+rangeHigh = ta.highest(highPrice, vpNumOfBars)
+rangeLow = ta.lowest(lowPrice, vpNumOfBars)
+rangeHeight = rangeHigh - rangeLow
+histogramHeight = rangeHeight > 0 and vpNumOfHistograms > 0 ? rangeHeight / vpNumOfHistograms : 0
+
+// Note on Volume Profile Data (pocLevel, valueAreaHigh, valueAreaLow):
+// These variables are calculated only once per bar, when 'barstate.islast' is true,
+// based on the last 'vpNumOfBars'.
+// However, they are used in other analytical modules (Pattern Analysis, VP Scoring)
+// which run on every incoming tick for the current bar and on every historical bar.
+// This means that for historical bars and for the current bar (until it becomes 'islast'),
+// these modules will use the VP values derived from the *end* of the *previous* bar's
+// 'vpNumOfBars' window. This is a common approach but implies that analysis for the
+// current, developing bar is based on the most recently completed VP profile.
+// متغيرات لتخزين بيانات Volume Profile
+var float pocLevel = na
+var float valueAreaHigh = na
+var float valueAreaLow = na
+
+// تنفيذ تحليل Volume Profile
+if barstate.islast and showVolumeProfile
+    if histogramHeight == 0
+        pocLevel := na
+        valueAreaHigh := na
+        valueAreaLow := na
+    else
+        // مصفوفات لتخزين بيانات الهيستوجرام
+        var histogramVolumes = array.new_float(vpNumOfHistograms, 0.0)
+    var histogramPrices = array.new_float(vpNumOfHistograms, 0.0)
+    
+    // تهيئة المصفوفات
+    for i = 0 to vpNumOfHistograms - 1
+        array.set(histogramPrices, i, rangeLow + histogramHeight * (i + 0.5))
+        array.set(histogramVolumes, i, 0.0)
+    
+    // حساب توزيع الحجم على مستويات الأسعار
+    for i = 0 to vpNumOfBars - 1
+        float barHigh = high[i]
+        float barLow = low[i]
+        float barVolume = volume[i]
+
+        if not na(barVolume) and barVolume > 0 and not na(barHigh) and not na(barLow)
+            // تحديد الهيستوجرامات التي يتقاطع معها هذا الشريط
+            for j = 0 to vpNumOfHistograms - 1
+                float histLow = rangeLow + histogramHeight * j
+                float histHigh = rangeLow + histogramHeight * (j + 1)
+                
+                // التحقق من التقاطع
+                if (barLow <= histHigh and barHigh >= histLow)
+                    // حساب نسبة التقاطع
+                    float overlap = math.min(barHigh, histHigh) - math.max(barLow, histLow)
+                    float barRange = barHigh - barLow
+                    float overlapRatio = barRange > 0 ? overlap / barRange : 0
+                    
+                    // إضافة الحجم المقابل للتقاطع
+                    array.set(histogramVolumes, j, array.get(histogramVolumes, j) + barVolume * overlapRatio)
+    
+    // تحديد نقطة التحكم (POC) - المستوى السعري ذو أعلى حجم
+    float maxVolume = 0.0
+    int maxVolumeIndex = 0
+    
+    for i = 0 to vpNumOfHistograms - 1
+        if array.get(histogramVolumes, i) > maxVolume
+            maxVolume := array.get(histogramVolumes, i)
+            maxVolumeIndex := i
+    
+    if maxVolume > 0 and maxVolumeIndex >= 0 and maxVolumeIndex < array.size(histogramPrices)
+        pocLevel := array.get(histogramPrices, maxVolumeIndex)
+    else
+        pocLevel := na
+        valueAreaHigh := na
+        valueAreaLow := na
+
+    // حساب منطقة القيمة (70% من إجمالي الحجم)
+    float totalVolume = 0.0
+    if not na(pocLevel) // Proceed only if POC was successfully determined
+        for i = 0 to vpNumOfHistograms - 1
+            totalVolume := totalVolume + array.get(histogramVolumes, i)
+        
+        float valueAreaVolume = totalVolume * 0.7
+        float cumulativeVolume = 0.0
+        int valueAreaLowIndex = maxVolumeIndex
+        int valueAreaHighIndex = maxVolumeIndex
+        
+        // Add initial POC volume to cumulative
+        if maxVolumeIndex >= 0 and maxVolumeIndex < array.size(histogramVolumes)
+            cumulativeVolume := array.get(histogramVolumes, maxVolumeIndex)
+
+        // توسيع منطقة القيمة حتى تشمل 70% من الحجم
+        while true // Loop will be broken internally
+            if cumulativeVolume >= valueAreaVolume then break
+            if valueAreaLowIndex == 0 and valueAreaHighIndex == vpNumOfHistograms - 1 then break // Safeguard: entire range included
+
+            bool canExpandDown = valueAreaLowIndex > 0
+            bool canExpandUp = valueAreaHighIndex < vpNumOfHistograms - 1
+
+            if not canExpandDown and not canExpandUp then break // Cannot expand further
+
+            float nextVolumeDown = canExpandDown ? array.get(histogramVolumes, valueAreaLowIndex - 1) : -1
+            float nextVolumeUp = canExpandUp ? array.get(histogramVolumes, valueAreaHighIndex + 1) : -1
+
+            if nextVolumeDown > nextVolumeUp and canExpandDown
+                valueAreaLowIndex := valueAreaLowIndex - 1
+                cumulativeVolume := cumulativeVolume + nextVolumeDown
+            else if nextVolumeUp >= nextVolumeDown and canExpandUp // Prioritize up if equal or greater
+                valueAreaHighIndex := valueAreaHighIndex + 1
+                cumulativeVolume := cumulativeVolume + nextVolumeUp
+            else if canExpandDown // Only option left is down
+                valueAreaLowIndex := valueAreaLowIndex - 1
+                cumulativeVolume := cumulativeVolume + nextVolumeDown
+            else // Should not be reached
+                break
+        
+        if valueAreaLowIndex >= 0 and valueAreaLowIndex < array.size(histogramPrices) and valueAreaHighIndex >= 0 and valueAreaHighIndex < array.size(histogramPrices)
+            valueAreaLow := array.get(histogramPrices, valueAreaLowIndex)
+            valueAreaHigh := array.get(histogramPrices, valueAreaHighIndex)
+        else
+            valueAreaLow := na
+            valueAreaHigh := na
+    else // pocLevel is na
+        valueAreaLow := na
+        valueAreaHigh := na
+
+    // رسم Volume Profile
+    if showVolumeProfile and not na(pocLevel)
+        // رسم نقطة التحكم
+        line.new(bar_index, pocLevel, bar_index + vpWidth, pocLevel, color=color.yellow, width=2)
+        
+        // رسم منطقة القيمة
+        if not na(valueAreaHigh) and not na(valueAreaLow)
+            line.new(bar_index, valueAreaHigh, bar_index + vpWidth / 2, valueAreaHigh, color=color.blue, width=1)
+            line.new(bar_index, valueAreaLow, bar_index + vpWidth / 2, valueAreaLow, color=color.blue, width=1)
+        
+        // رسم الهيستوجرامات
+        if maxVolume > 0 // Implies pocLevel is likely set and histogramVolumes is populated
+            for i = 0 to vpNumOfHistograms - 1
+                float histVolume = array.get(histogramVolumes, i)
+                float histPrice = array.get(histogramPrices, i)
+                float histWidth = maxVolume > 0 and histVolume > 0 ? (vpWidth * histVolume / maxVolume) : 0
+                
+                if histWidth > 0
+                    box.new(bar_index, histPrice + histogramHeight / 2, bar_index + histWidth, histPrice - histogramHeight / 2, 
+                           bgcolor=color.new(color.purple, 80), border_color=color.new(color.purple, 60))
+
+float fastMA = ta.sma(price, maFast)
+float mediumMA = ta.sma(price, maMedium)
+float slowMA = ta.sma(price, maSlow)
+
+// ===== وحدة تحليل الاتجاه =====
+// حساب مؤشر ADX
+int adxLength = 14
+[float diplus, float diminus, float adxValue] = ta.dmi(adxLength, adxLength)
+
+// تحديد الاتجاه بناءً على ترتيب المتوسطات المتحركة
+bool bullishAlignment = fastMA > mediumMA and mediumMA > slowMA
+bool bearishAlignment = fastMA < mediumMA and mediumMA < slowMA
+
+// تحديد قوة الاتجاه بناءً على مؤشر ADX
+bool strongTrend = adxValue > 25
+
+// حساب درجة الاتجاه
+float trendScore = 0.0
+
+// اتجاه صاعد قوي
+if bullishAlignment and strongTrend
+    trendScore := 100.0
+// اتجاه صاعد ضعيف
+else if bullishAlignment and not strongTrend
+    trendScore := 50.0
+// اتجاه هابط قوي
+else if bearishAlignment and strongTrend
+    trendScore := -100.0
+// اتجاه هابط ضعيف
+else if bearishAlignment and not strongTrend
+    trendScore := -50.0
+// اتجاه عرضي مع ميل صاعد
+else if fastMA > slowMA
+    trendScore := 25.0
+// اتجاه عرضي مع ميل هابط
+else if fastMA < slowMA
+    trendScore := -25.0
+// اتجاه عرضي محايد
+else
+    trendScore := 0.0
+
+// تعديل درجة الاتجاه بناءً على المسافة بين المتوسطات المتحركة
+float maDistance = not na(slowMA) and slowMA != 0 ? math.abs(fastMA - slowMA) / slowMA * 100 : 0
+trendScore := trendScore * math.min(maDistance / 5, 1.0)
+
+// ===== وحدة تحليل الزخم =====
+// حساب مؤشر RSI
+int rsiLength = 14
+float rsiValue = ta.rsi(close, rsiLength)
+
+// حساب مؤشر MACD
+int macdFastLength = 12
+int macdSlowLength = 26
+int macdSignalLength = 9
+[float macdLine, float signalLine, float histLine] = ta.macd(close, macdFastLength, macdSlowLength, macdSignalLength)
+
+// تحديد مناطق التشبع الشرائي والبيعي
+bool rsiOverbought = rsiValue > 70
+bool rsiOversold = rsiValue < 30
+
+// تحديد إشارات MACD
+bool macdPositive = macdLine > signalLine
+bool macdNegative = macdLine < signalLine
+bool macdCrossUp = ta.crossover(macdLine, signalLine)
+bool macdCrossDown = ta.crossunder(macdLine, signalLine)
+
+// حساب درجة الزخم
+float momentumScore = 0.0
+
+// تحليل RSI
+if rsiOverbought
+    momentumScore := momentumScore + 50.0
+else if rsiOversold
+    momentumScore := momentumScore - 50.0
+else
+    // تحويل RSI من نطاق [0, 100] إلى [-50, 50]
+    momentumScore := momentumScore + (rsiValue - 50) * 1.0
+
+// تحليل MACD
+if macdPositive
+    momentumScore := momentumScore + 25.0
+else if macdNegative
+    momentumScore := momentumScore - 25.0
+
+// تعديل إضافي لتقاطعات MACD
+if macdCrossUp
+    momentumScore := momentumScore + 25.0
+else if macdCrossDown
+    momentumScore := momentumScore - 25.0
+
+// تقييد درجة الزخم بين -100 و +100
+momentumScore := math.max(math.min(momentumScore, 100.0), -100.0)
+
+// ===== وحدة تحليل الأنماط =====
+// تحديد نماذج الشموع الانعكاسية
+// نموذج المطرقة (Hammer)
+bool hammerPattern = (low - math.min(open, close)) >= (math.abs(open - close) * 3) and 
+                (math.max(open, close) - low) >= (high - math.max(open, close)) * 2
+
+// نموذج الرجل المشنوق (Hanging Man)
+bool hangingManPattern = (low - math.min(open, close)) >= (math.abs(open - close) * 3) and 
+                    (math.max(open, close) - low) >= (high - math.max(open, close)) * 2 and 
+                    close < open
+
+// نموذج نجمة المساء (Evening Star)
+bool eveningStarPattern = close[2] > open[2] and 
+                    math.abs(open[1] - close[1]) < math.abs(open[2] - close[2]) * 0.3 and 
+                    close < open and 
+                    close < close[2]
+
+// نموذج نجمة الصباح (Morning Star)
+bool morningStarPattern = close[2] < open[2] and 
+                    math.abs(open[1] - close[1]) < math.abs(open[2] - close[2]) * 0.3 and 
+                    close > open and 
+                    close > close[2]
+
+// تحديد الاختراقات والارتدادات
+// تحديد الاختراقات والارتدادات باستخدام مستويات Volume Profile
+bool breakoutUp = close > valueAreaHigh and close[1] <= valueAreaHigh
+bool breakoutDown = close < valueAreaLow and close[1] >= valueAreaLow
+bool bounceUp = close > low and math.abs(close - valueAreaLow) / math.abs(high - low) < 0.1
+bool bounceDown = close < high and math.abs(close - valueAreaHigh) / math.abs(high - low) < 0.1
+
+// حساب درجة الأنماط
+float patternScore = 0.0
+
+// تقييم نماذج الشموع الانعكاسية
+if hammerPattern and close > open
+    patternScore := patternScore + 30.0
+else if hangingManPattern
+    patternScore := patternScore - 30.0
+else if eveningStarPattern
+    patternScore := patternScore - 50.0
+else if morningStarPattern
+    patternScore := patternScore + 50.0
+
+// تقييم الاختراقات والارتدادات
+if breakoutUp
+    patternScore := patternScore + 40.0
+else if breakoutDown
+    patternScore := patternScore - 40.0
+else if bounceUp
+    patternScore := patternScore + 20.0
+else if bounceDown
+    patternScore := patternScore - 20.0
+
+// تقييد درجة الأنماط بين -100 و +100
+patternScore := math.max(math.min(patternScore, 100.0), -100.0)
+
+// ===== وحدة تحليل Volume Profile =====
+// تحديد موقع السعر بالنسبة لمناطق القيمة
+bool insideValueArea = not na(valueAreaLow) and not na(valueAreaHigh) and close >= valueAreaLow and close <= valueAreaHigh
+bool aboveValueArea = not na(valueAreaHigh) and close > valueAreaHigh
+bool belowValueArea = not na(valueAreaLow) and close < valueAreaLow
+
+// تحديد المسافة من نقطة التحكم
+float distanceToPOC = not na(pocLevel) and pocLevel != 0 ? math.abs(close - pocLevel) / pocLevel * 100 : na
+
+// حساب درجة Volume Profile
+float vpScore = 0.0
+
+// تقييم موقع السعر بالنسبة لمناطق القيمة
+if insideValueArea
+    vpScore := 0.0  // منطقة محايدة
+else if aboveValueArea
+    vpScore := 50.0  // فوق منطقة القيمة (إيجابي)
+else if belowValueArea
+    vpScore := -50.0  // تحت منطقة القيمة (سلبي)
+
+// تعديل درجة Volume Profile بناءً على المسافة من نقطة التحكم
+if not na(distanceToPOC)
+    if distanceToPOC < 0.5
+        // قريب جدًا من نقطة التحكم (منطقة تجمع قوية)
+        // If vpScore is 0, determine sign based on price vs pocLevel
+        var float sign_vpScore = vpScore == 0 ? math.sign(close - pocLevel) : math.sign(vpScore)
+        vpScore := vpScore + 50.0 * (sign_vpScore == 0 ? 1 : sign_vpScore) // If sign is 0, default to positive adjustment
+    else if distanceToPOC < 1.0
+        // قريب من نقطة التحكم
+        var float sign_vpScore2 = vpScore == 0 ? math.sign(close - pocLevel) : math.sign(vpScore)
+        vpScore := vpScore + 25.0 * (sign_vpScore2 == 0 ? 1 : sign_vpScore2) // If sign is 0, default to positive adjustment
+
+// تقييد درجة Volume Profile بين -100 و +100
+vpScore := math.max(math.min(vpScore, 100.0), -100.0)
+
+// ===== وحدة تحليل الأخبار (محاكاة) =====
+// حساب عامل تعديل المخاطر بناءً على التقلب
+int atrLength = 14
+float atrValue = ta.atr(atrLength)
+float averageATR = ta.sma(atrValue, 10)
+
+float riskAdjustmentFactor = 1.0
+if not na(atrValue) and not na(averageATR) and atrValue > averageATR * 1.5
+    riskAdjustmentFactor := 0.7  // تقليل المخاطر عند ارتفاع التقلب
+
+// ===== وحدة تجميع الإشارات =====
+// حساب درجة القرار النهائية
+float decisionScore = (trendScore * trendWeight) + 
+                (momentumScore * momentumWeight) + 
+                (patternScore * patternWeight) + 
+                (vpScore * vpWeight)
+
+// تعديل درجة القرار بناءً على عامل تعديل المخاطر
+decisionScore := decisionScore * riskAdjustmentFactor
+
+// تحديد إشارات الدخول والخروج
+bool entrySignal = false
+bool exitSignal = false
+
+// إشارة الدخول (شراء)
+if decisionScore > entryThreshold
+    entrySignal := true
+
+// إشارة الخروج (بيع)
+if decisionScore < -exitThreshold
+    exitSignal := true
+
+// تحديد مستوى وقف الخسارة
+float stopLossLevel = na
+float atrMultiplier = 2.0
+
+// تعيين مستوى وقف الخسارة
+if entrySignal
+    stopLossLevel := close - (atrValue * atrMultiplier)
+else if exitSignal // Ensuring this is else if
+    stopLossLevel := close + (atrValue * atrMultiplier)
+
+// ===== وحدة العرض المرئي =====
+// عرض المتوسطات المتحركة
+if showMA
+    plot(fastMA, "المتوسط المتحرك السريع", color=color.blue, linewidth=2)
+    plot(mediumMA, "المتوسط المتحرك المتوسط", color=color.purple, linewidth=2)
+    plot(slowMA, "المتوسط المتحرك البطيء", color=color.red, linewidth=2)
+
+// عرض إشارات الدخول والخروج
+plotshape(entrySignal and showSignals ? true : na, "إشارة الدخول", style=shape.circle, location=location.belowbar, color=color.green, size=size.normal)
+plotshape(exitSignal and showSignals ? true : na, "إشارة الخروج", style=shape.circle, location=location.abovebar, color=color.red, size=size.normal)
+
+// عرض مستويات وقف الخسارة
+plot(showStopLoss and (entrySignal or exitSignal) ? stopLossLevel : na, "وقف الخسارة", color=color.orange, style=plot.style_cross, linewidth=2)
+
+// عرض درجة القرار للتصحيح
+var label decisionLabel = na
+if barstate.islast
+    string decisionText = "درجة القرار: " + (na(decisionScore) ? "N/A" : str.tostring(decisionScore, "#.##")) + 
+                         "
+الاتجاه: " + (na(trendScore) ? "N/A" : str.tostring(trendScore, "#.##")) + 
+                         "
+الزخم: " + (na(momentumScore) ? "N/A" : str.tostring(momentumScore, "#.##")) + 
+                         "
+الأنماط: " + (na(patternScore) ? "N/A" : str.tostring(patternScore, "#.##")) + 
+                         "
+Volume Profile: " + (na(vpScore) ? "N/A" : str.tostring(vpScore, "#.##"))
+            
+    if na(decisionLabel)
+        decisionLabel := label.new(bar_index, high, text=decisionText,
+                                 color=color.new(color.black, 50), // Adjusted transparency
+                                 style=label.style_label_down,
+                                 textcolor=color.white, size=size.normal) // Added size for consistency
+    else
+        label.set_xy(decisionLabel, bar_index, high)
+        label.set_text(decisionLabel, decisionText)
+    // label.delete(decisionLabel[1]) // This line should be removed
