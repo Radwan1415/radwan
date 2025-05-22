@@ -424,15 +424,18 @@ plot(showStopLoss and (entrySignal or exitSignal) ? stopLossLevel : na, "وقف 
 // عرض درجة القرار للتصحيح
 var label decisionLabel = na
 if barstate.islast
-    string decisionText = "درجة القرار: " + (na(decisionScore) ? "N/A" : str.tostring(decisionScore, "#.##")) + 
-                         "
-الاتجاه: " + (na(trendScore) ? "N/A" : str.tostring(trendScore, "#.##")) + 
-                         "
-الزخم: " + (na(momentumScore) ? "N/A" : str.tostring(momentumScore, "#.##")) + 
-                         "
-الأنماط: " + (na(patternScore) ? "N/A" : str.tostring(patternScore, "#.##")) + 
-                         "
-Volume Profile: " + (na(vpScore) ? "N/A" : str.tostring(vpScore, "#.##"))
+            // Create safe string versions of score variables for the label
+            string decisionScoreStr = na(decisionScore) ? "N/A" : str.tostring(decisionScore, "#.##")
+            string trendScoreStr = na(trendScore) ? "N/A" : str.tostring(trendScore, "#.##")
+            string momentumScoreStr = na(momentumScore) ? "N/A" : str.tostring(momentumScore, "#.##")
+            string patternScoreStr = na(patternScore) ? "N/A" : str.tostring(patternScore, "#.##")
+            string vpScoreStr = na(vpScore) ? "N/A" : str.tostring(vpScore, "#.##")
+
+    string decisionText = "درجة القرار: " + decisionScoreStr + 
+                                 "\nالاتجاه: " + trendScoreStr + 
+                                 "\nالزخم: " + momentumScoreStr + 
+                                 "\nالأنماط: " + patternScoreStr + 
+                                 "\nVolume Profile: " + vpScoreStr
             
     if na(decisionLabel)
         decisionLabel := label.new(bar_index, high, text=decisionText,
