@@ -425,24 +425,24 @@ plot(showStopLoss and (entrySignal or exitSignal) ? stopLossLevel : na, "وقف 
 var label decisionLabel = na
 if barstate.islast
             // Create safe string versions of score variables for the label
-            string decisionScoreStr = na(decisionScore) ? "N/A" : str.tostring(decisionScore, "#.##")
-            string trendScoreStr = na(trendScore) ? "N/A" : str.tostring(trendScore, "#.##")
-            string momentumScoreStr = na(momentumScore) ? "N/A" : str.tostring(momentumScore, "#.##")
-            string patternScoreStr = na(patternScore) ? "N/A" : str.tostring(patternScore, "#.##")
-            string vpScoreStr = na(vpScore) ? "N/A" : str.tostring(vpScore, "#.##")
+            // string decisionScoreStr = na(decisionScore) ? "N/A" : str.tostring(decisionScore, "#.##")
+            // string trendScoreStr = na(trendScore) ? "N/A" : str.tostring(trendScore, "#.##")
+            // string momentumScoreStr = na(momentumScore) ? "N/A" : str.tostring(momentumScore, "#.##")
+            // string patternScoreStr = na(patternScore) ? "N/A" : str.tostring(patternScore, "#.##")
+            // string vpScoreStr = na(vpScore) ? "N/A" : str.tostring(vpScore, "#.##")
 
-    string decisionText = "درجة القرار: " + decisionScoreStr + 
-                                 "\nالاتجاه: " + trendScoreStr + 
-                                 "\nالزخم: " + momentumScoreStr + 
-                                 "\nالأنماط: " + patternScoreStr + 
-                                 "\nVolume Profile: " + vpScoreStr
+    // string decisionText = "درجة القرار: " + decisionScoreStr + 
+    //                              "\nالاتجاه: " + trendScoreStr + 
+    //                              "\nالزخم: " + momentumScoreStr + 
+    //                              "\nالأنماط: " + patternScoreStr + 
+    //                              "\nVolume Profile: " + vpScoreStr
+    string decisionText = "Test Label - Status OK"
             
-    if na(decisionLabel)
-        decisionLabel := label.new(bar_index, high, text=decisionText,
-                                 color=color.new(color.black, 50), // Adjusted transparency
-                                 style=label.style_label_down,
-                                 textcolor=color.white, size=size.normal) // Added size for consistency
-    else
-        label.set_xy(decisionLabel, bar_index, high)
-        label.set_text(decisionLabel, decisionText)
-    // label.delete(decisionLabel[1]) // This line should be removed
+    // New label handling logic: always delete and recreate
+    if not na(decisionLabel)
+        label.delete(decisionLabel)
+    
+    decisionLabel := label.new(bar_index, high, text=decisionText,
+                             color=color.new(color.black, 50), 
+                             style=label.style_label_down,
+                             textcolor=color.white, size=size.normal)
